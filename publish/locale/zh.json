@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "移动控制",
+    "description": "给 DSH 一个手机入口：本机反向代理 + 设备配对 + 移动页模块裁剪，隧道交给 cloudflared 等外部进程。"
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Mobile Control",
+    "description": "A phone entry point for DSH: loopback reverse proxy, device pairing, and mobile boot-manifest trimming. Tunnels are managed externally."
+  }
+}

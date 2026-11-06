@@ -12,13 +12,15 @@
       "default": "./lib/client.js"
     },
     "./package.json": "./package.json",
-    "./icon": "./icon.svg"
+    "./icon": "./icon.svg",
+    "./locale/*.json": "./locale/*.json"
   },
   "files": [
     "lib/",
     "cordis.patch.yml",
     "icon.svg",
-    "README.md"
+    "README.md",
+    "locale/"
   ],
   "engines": {
     "dsh": ">=0.2.1-rc.2"
