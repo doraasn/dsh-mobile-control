@@ -1,5 +1,5 @@
 window.__ModuleLoader__.load({
-  id: 'dsh-mobile-access',
+  id: 'dsh-mobile-control',
   factory: (require) => {
     const react = require('react')
     const createPortal = require('react-dom').createPortal
@@ -568,7 +568,7 @@ function createUi(react, createPortal) {
     const { useState, useEffect, useCallback } = react
     /* ── 移动控制 ────────────────────────────────────────────────────────── */
 
-    const API = '/mobile-access/api'
+    const API = '/mobile-control/api'
     const FORM_INPUT_WIDTH = 208
 
     async function call(path, init) {
@@ -799,7 +799,7 @@ function createUi(react, createPortal) {
     const inject = ['slots']
     function apply(ctx) {
       ctx.slots.inject('settings.section', () =>
-        ctx.slots.register({ id: 'mobile-access', name: 'settings.section', order: 200, label: () => '移动控制' }, Settings))
+        ctx.slots.register({ id: 'mobile-control', name: 'settings.section', order: 200, label: () => '移动控制' }, Settings))
     }
 
     return { inject, apply }

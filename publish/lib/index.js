@@ -1,5 +1,5 @@
 /**
- * dsh-mobile-access — 宿主侧。
+ * dsh-mobile-control — 宿主侧。
  *
  * 只做四件事：
  *   1. 在 127.0.0.1:<port> 起一个反向代理，把手机请求转发给 DSH 本机 Web；
@@ -16,14 +16,15 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 
-export const name = 'mobile-access'
+export const name = 'mobile-control'
 export const inject = ['webServer']
 
 const DSH_HOME = process.env.DSH_HOME || path.join(os.homedir(), '.dsh')
-const STORAGE = path.join(DSH_HOME, 'storages', 'mobile-access.json')
+const STORAGE = path.join(DSH_HOME, 'storages', 'mobile-control.json')
+const LEGACY_STORAGE = path.join(DSH_HOME, 'storages', 'mobile-access.json')
 const DEVICE_COOKIE = 'dsh_ma_device'
-const ADMIN_PREFIX = '/mobile-access/api'
-const PUBLIC_PREFIX = '/mobile-access/pair'
+const ADMIN_PREFIX = '/mobile-control/api'
+const PUBLIC_PREFIX = '/mobile-control/pair'
 /** 浏览器对 Max-Age 的实际上限是 400 天；每次请求滑动续期，等价于永久。 */
 const COOKIE_MAX_AGE = 34560000
 const PAIR_CODE_TTL_MS = 5 * 60 * 1000
@@ -35,7 +36,7 @@ const UPSTREAM_COOKIE_MARGIN_MS = 60 * 1000
 
 /** 从旧 dsh-mobile 的配置里推断公网地址，避免让用户重填。 */
 function inferLegacyPublicUrl() {
-  const legacy = path.join(DSH_HOME, 'mobile-access', 'remote')
+  const legacy = path.join(DSH_HOME, 'mobile-control', 'remote')
   try {
     const tunnel = JSON.parse(fs.readFileSync(path.join(legacy, 'cloudflared', 'tunnel.json'), 'utf8'))
     if (typeof tunnel.hostname === 'string' && tunnel.hostname.trim() !== '') return `https://${tunnel.hostname.trim()}`
@@ -45,6 +46,13 @@ function inferLegacyPublicUrl() {
     if (typeof origin.publicOrigin === 'string' && origin.publicOrigin.trim() !== '') return origin.publicOrigin.trim()
   } catch {}
   return ''
+}
+
+/** 从旧包名迁移一次状态（设备、端口、公网地址、模块排除项）。 */
+function migrateLegacyStorage() {
+  try {
+    if (!fs.existsSync(STORAGE) && fs.existsSync(LEGACY_STORAGE)) fs.copyFileSync(LEGACY_STORAGE, STORAGE)
+  } catch {}
 }
 
 function readState() {
@@ -133,7 +141,7 @@ function deviceCookie(token, req) {
  */
 /** 本地常见插件的中文名兜底；包自带的 displayName / locale 优先。 */
 const MODULE_TITLE_ALIASES = {
-  'dsh-mobile-access': '移动控制',
+  'dsh-mobile-control': '移动控制',
   'dsh-quota-board': '额度看板',
   'dsh-quota-panel': '额度看板',
   'dsh-cloud-sync': '云同步',
@@ -311,17 +319,18 @@ function rewriteBootManifest(html, excludedIds) {
 
 // ── 插件主体 ──────────────────────────────────────────────────────────────
 
-const ROUTE_SLOT = Symbol.for('dsh-mobile-access.route')
-const SERVER_SLOT = Symbol.for('dsh-mobile-access.server')
+const ROUTE_SLOT = Symbol.for('dsh-mobile-control.route')
+const SERVER_SLOT = Symbol.for('dsh-mobile-control.server')
 
 export function apply(ctx, config) {
   const bootLog = (message) => {
     try {
       fs.mkdirSync(path.join(DSH_HOME, 'storages'), { recursive: true })
-      fs.appendFileSync(path.join(DSH_HOME, 'storages', 'mobile-access.boot.log'), `${new Date().toISOString()} ${message}\n`)
+      fs.appendFileSync(path.join(DSH_HOME, 'storages', 'mobile-control.boot.log'), `${new Date().toISOString()} ${message}\n`)
     } catch {}
   }
   bootLog('apply')
+  migrateLegacyStorage()
   // 热重载：先释放上一个实例按名字唯一注册的资源，否则新实例会撞 duplicate prefix route。
   for (const slot of [ROUTE_SLOT, SERVER_SLOT]) {
     const previous = globalThis[slot]
@@ -494,7 +503,7 @@ export function apply(ctx, config) {
             const result = rewriteBootManifest(body, state.excludedClientModules)
             if (result.html !== body) {
               body = result.html
-              res.setHeader('x-mobile-access-removed', String(result.removed))
+              res.setHeader('x-mobile-control-removed', String(result.removed))
             }
           }
           const outHeaders = { ...response.headers }
@@ -653,7 +662,7 @@ form.addEventListener('submit', async (event) => {
   go.disabled = true
   go.textContent = '配对中…'
   try {
-    const response = await fetch('/mobile-access/pair', {
+    const response = await fetch('/mobile-control/pair', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -818,9 +827,9 @@ form.addEventListener('submit', async (event) => {
         const next = http.createServer((req, res) => {
           const url = new URL(req.url, 'http://localhost')
           // 健康检查对隧道/监控公开，不走设备认证。
-          if (url.pathname === '/mobile-access/health') return sendJson(res, 200, { ok: true })
-          if (url.pathname === '/mobile-access/pair' && req.method === 'GET') return pairPage(req, res, url.searchParams.get('code'))
-          if (url.pathname === '/mobile-access/pair' && req.method === 'POST') {
+          if (url.pathname === '/mobile-control/health') return sendJson(res, 200, { ok: true })
+          if (url.pathname === '/mobile-control/pair' && req.method === 'GET') return pairPage(req, res, url.searchParams.get('code'))
+          if (url.pathname === '/mobile-control/pair' && req.method === 'POST') {
             return readBody(req).then((text) => {
               let body = {}
               try {
@@ -833,7 +842,7 @@ form.addEventListener('submit', async (event) => {
             if (device === null) {
               res.statusCode = 401
               res.setHeader('content-type', 'text/html; charset=utf-8')
-              res.end('<meta charset="utf-8"><p>未配对。<a href="/mobile-access/pair">点此配对</a></p>')
+              res.end('<meta charset="utf-8"><p>未配对。<a href="/mobile-control/pair">点此配对</a></p>')
               return
             }
             res.__mobileDevice = device

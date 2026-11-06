@@ -11,7 +11,7 @@ import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 
-const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-mobile-access-reload-'))
+const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-mobile-control-reload-'))
 process.env.DSH_HOME = home
 
 const { apply } = await import('../lib/index.js')
@@ -61,7 +61,7 @@ function getState() {
   return new Promise((resolve, reject) => {
     const req = new http.IncomingMessage()
     req.method = 'GET'
-    req.url = '/mobile-access/api/state'
+    req.url = '/mobile-control/api/state'
     req.socket = { remoteAddress: '127.0.0.1', encrypted: false }
     req.headers = { host: '127.0.0.1' }
     req.push(null)

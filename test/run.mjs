@@ -8,7 +8,7 @@ import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 
-const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-mobile-access-'))
+const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-mobile-control-'))
 process.env.DSH_HOME = home
 
 const { apply } = await import('../lib/index.js')
@@ -24,7 +24,7 @@ const ctx = {
 
 apply(ctx, { port: 3455 })
 assert.equal(routes.length, 1, '应注册一条管理路由')
-assert.equal(routes[0].path, '/mobile-access/api')
+assert.equal(routes[0].path, '/mobile-control/api')
 
 const handler = routes[0].handler
 
@@ -78,7 +78,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 await sleep(300)
 
 // 1. 默认状态
-const initial = await admin('GET', '/mobile-access/api/state')
+const initial = await admin('GET', '/mobile-control/api/state')
 assert.equal(initial.status, 200)
 assert.equal(initial.body.enabled, true)
 assert.equal(initial.body.port, 3455)
@@ -90,46 +90,46 @@ const anonymous = await publicRequest('GET', '/')
 assert.equal(anonymous.status, 401)
 
 // 3. 生成配对码 → 6 位数字
-const pair = await admin('POST', '/mobile-access/api/pair/start', {})
+const pair = await admin('POST', '/mobile-control/api/pair/start', {})
 assert.equal(pair.status, 200)
 assert.match(String(pair.body.code), /^\d{6}$/)
 
 // 4. 错误配对码 → 401 且不产生设备
-const wrong = await publicRequest('POST', '/mobile-access/pair', { body: { code: '000000' } })
+const wrong = await publicRequest('POST', '/mobile-control/pair', { body: { code: '000000' } })
 assert.equal(wrong.status, 401)
 
 // 5. 正确配对 → 302 + Set-Cookie
-const ok = await publicRequest('POST', '/mobile-access/pair', { body: { code: pair.body.code, name: '测试机' } })
+const ok = await publicRequest('POST', '/mobile-control/pair', { body: { code: pair.body.code, name: '测试机' } })
 assert.equal(ok.status, 302)
 const setCookie = String(ok.headers['set-cookie'] ?? '')
 assert.match(setCookie, /dsh_ma_device=[0-9a-f]{64}/)
 assert.match(setCookie, /Max-Age=34560000/)
 
 // 6. 设备已入库，且管理接口不回传 token
-const afterPair = await admin('GET', '/mobile-access/api/state')
+const afterPair = await admin('GET', '/mobile-control/api/state')
 assert.equal(afterPair.body.devices.length, 1)
 assert.equal(afterPair.body.devices[0].name, '测试机')
 assert.equal(afterPair.body.devices[0].token, undefined)
 
 // 7. 撤销后设备清空
-const revoked = await admin('POST', '/mobile-access/api/devices/revoke', { id: afterPair.body.devices[0].id })
+const revoked = await admin('POST', '/mobile-control/api/devices/revoke', { id: afterPair.body.devices[0].id })
 assert.equal(revoked.body.removed, 1)
-const afterRevoke = await admin('GET', '/mobile-access/api/state')
+const afterRevoke = await admin('GET', '/mobile-control/api/state')
 assert.equal(afterRevoke.body.devices.length, 0)
 
 // 8. 端口校验：越界 → 400
-const badPort = await admin('POST', '/mobile-access/api/port', { port: 80 })
+const badPort = await admin('POST', '/mobile-control/api/port', { port: 80 })
 assert.equal(badPort.status, 400)
 
 // 9. 公网地址校验
-const badUrl = await admin('POST', '/mobile-access/api/public-url', { publicUrl: 'not-a-url' })
+const badUrl = await admin('POST', '/mobile-control/api/public-url', { publicUrl: 'not-a-url' })
 assert.equal(badUrl.status, 400)
 
 // 10. 非回环请求 → 403
 const foreign = await new Promise((resolve, reject) => {
   const req = new http.IncomingMessage()
   req.method = 'GET'
-  req.url = '/mobile-access/api/state'
+  req.url = '/mobile-control/api/state'
   req.socket = { remoteAddress: '10.0.0.9', encrypted: false }
   req.headers = { host: '10.0.0.9' }
   req.push(null)

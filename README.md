@@ -1,4 +1,4 @@
-# dsh-mobile-access · 移动控制
+# dsh-mobile-control · 移动控制
 
 给 DSH 一个轻量的手机入口：本机反向代理 + 设备级配对 + 移动页模块裁剪。隧道（cloudflared / cpolar / frp）不由本插件管理，外部进程把公网域名指到 `127.0.0.1:<端口>` 即可。
 
@@ -148,7 +148,7 @@ sudo cloudflared service install <TOKEN>
 sudo systemctl enable --now cloudflared
 ```
 
-装好后关掉前台窗口，用 `https://dsh.example.com/mobile-access/health` 验证，返回 `{"ok":true}` 就说明隧道和插件都通了。
+装好后关掉前台窗口，用 `https://dsh.example.com/mobile-control/health` 验证，返回 `{"ok":true}` 就说明隧道和插件都通了。
 
 ---
 
@@ -168,7 +168,7 @@ sudo systemctl enable --now cloudflared
 1. 设置页点 **生成配对码**，得到一个 6 位数字（5 分钟内有效）。
 2. 手机浏览器打开：
    ```
-   https://dsh.example.com/mobile-access/pair?code=123456
+   https://dsh.example.com/mobile-control/pair?code=123456
    ```
    或者只打开 `https://dsh.example.com`，会提示未配对并给出配对入口。
 3. 页面会预填设备名（从浏览器 UA 推断，如 `iPhone`、`Xiaomi 14`），可改。
@@ -196,7 +196,7 @@ sudo systemctl enable --now cloudflared
 
 ## 安全说明
 
-- 设备 token 只存在电脑的 `~/.dsh/storages/mobile-access.json`，接口不会回传。
+- 设备 token 只存在电脑的 `~/.dsh/storages/mobile-control.json`，接口不会回传。
 - Cookie 为 `HttpOnly; SameSite=Lax`，HTTPS 下自动加 `Secure`。
 - 配对失败 5 次锁 10 分钟，防止暴力猜码。
 - 建议长期开启 Cloudflare 的 **Access** 或至少给域名加 WAF 规则；本插件的配对是第二道门，不是唯一一道。
@@ -206,13 +206,13 @@ sudo systemctl enable --now cloudflared
 ## 配置参考
 
 ```yaml
-- id: mobile-access
-  name: '@local/dsh-mobile-access'
+- id: mobile-control
+  name: '@local/dsh-mobile-control'
   config:
     port: 3444      # 监听端口，默认 3444
 ```
 
-状态文件：`~/.dsh/storages/mobile-access.json`（设备 token、端口、公网地址、模块排除项）。
+状态文件：`~/.dsh/storages/mobile-control.json`（设备 token、端口、公网地址、模块排除项）。
 
 ## 与 dsh-mobile 的关系
 

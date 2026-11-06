@@ -1,6 +1,6 @@
 # 这个 bundle 挂什么：宿主路由 + 侧栏卡片 + 设置页分区。
 # name 必须与 package.json 的 name 一致，否则启动报 duplicate factory registration。
 - insert:
-    - id: mobile-access
-      name: '@local/dsh-mobile-access'
+    - id: mobile-control
+      name: '@local/dsh-mobile-control'
       config: {}
