@@ -24,6 +24,22 @@ const DSH_HOME = process.env.DSH_HOME || path.join(os.homedir(), '.dsh')
 const STORAGE = path.join(DSH_HOME, 'storages', 'mobile-control.json')
 const LEGACY_STORAGE = path.join(DSH_HOME, 'storages', 'mobile-access.json')
 const DEVICE_COOKIE = 'dsh_ma_device'
+const TOKEN_PREFIX = 'sha256:'
+
+/** 设备 token 只存哈希：文件被读走也不能直接拿去冒充设备。 */
+function hashToken(token) {
+  return TOKEN_PREFIX + crypto.createHash('sha256').update(String(token)).digest('hex')
+}
+
+function tokenMatches(stored, candidate) {
+  if (typeof stored !== 'string' || typeof candidate !== 'string') return false
+  if (stored.startsWith(TOKEN_PREFIX)) {
+    const left = Buffer.from(stored.slice(TOKEN_PREFIX.length), 'hex')
+    const right = Buffer.from(hashToken(candidate).slice(TOKEN_PREFIX.length), 'hex')
+    return left.length === right.length && crypto.timingSafeEqual(left, right)
+  }
+  return stored === candidate
+}
 const ADMIN_PREFIX = '/mobile-control/api'
 const PUBLIC_PREFIX = '/mobile-control/pair'
 /** 浏览器对 Max-Age 的实际上限是 400 天；每次请求滑动续期，等价于永久。 */
@@ -56,18 +72,38 @@ function migrateLegacyStorage() {
   } catch {}
 }
 
-function readState() {
+export function readState() {
   try {
     const parsed = JSON.parse(fs.readFileSync(STORAGE, 'utf8'))
     const storedUrl = typeof parsed.publicUrl === 'string' ? parsed.publicUrl : ''
-    return {
+    const devices = Array.isArray(parsed.devices) ? parsed.devices : []
+    // 旧版本把设备 token 明文存在这里：加载时一次性改存哈希，落盘文件里不再有可直接使用的凭据。
+    let migrated = false
+    const safeDevices = devices
+      .filter((device) => device && typeof device === 'object')
+      .map((device) => {
+        if (typeof device.token === 'string' && device.token !== '' && !device.token.startsWith(TOKEN_PREFIX)) {
+          migrated = true
+          return { ...device, token: hashToken(device.token) }
+        }
+        return device
+      })
+    const state = {
       enabled: parsed.enabled !== false,
       port: Number.isSafeInteger(parsed.port) ? parsed.port : 3444,
       publicUrl: storedUrl !== '' ? storedUrl : inferLegacyPublicUrl(),
       tunnelAutostart: parsed.tunnelAutostart === true,
-      devices: Array.isArray(parsed.devices) ? parsed.devices : [],
+      devices: safeDevices,
       excludedClientModules: Array.isArray(parsed.excludedClientModules) ? parsed.excludedClientModules : [],
     }
+    if (migrated) {
+      try {
+        writeState(state)
+      } catch {
+        /* 迁移失败不影响本次启动，下次再试 */
+      }
+    }
+    return state
   } catch {
     return { enabled: true, port: 3444, publicUrl: inferLegacyPublicUrl(), tunnelAutostart: false, devices: [], excludedClientModules: [] }
   }
@@ -288,10 +324,13 @@ function ensureTunnel(log) {
     }
     try {
       const bin = findCloudflaredBin()
+      // token 走环境变量而不是 argv：进程列表对同机任何进程可见，argv 里的 token
+      // 等于把整条隧道（含 ingress）交给对方。
+      const env = { ...process.env, TUNNEL_TOKEN: token }
       // 用 cmd start 启动：cloudflared 不再挂在 DSH 的进程树里，DSH 退出/重启不会把它带走。
       const child = process.platform === 'win32'
-        ? spawn('cmd.exe', ['/c', 'start', '', bin, 'tunnel', 'run', '--token', token], { detached: true, stdio: 'ignore', windowsHide: true })
-        : spawn(bin, ['tunnel', 'run', '--token', token], { detached: true, stdio: 'ignore' })
+        ? spawn('cmd.exe', ['/c', 'start', '', bin, 'tunnel', 'run'], { detached: true, stdio: 'ignore', windowsHide: true, env })
+        : spawn(bin, ['tunnel', 'run'], { detached: true, stdio: 'ignore', env })
       child.unref()
       log('tunnel spawned')
     } catch (error) {
@@ -500,7 +539,7 @@ export function apply(ctx, config) {
 
   function findDevice(token) {
     if (typeof token !== 'string' || token.length < 32) return null
-    return state.devices.find((device) => device.token === token) ?? null
+    return state.devices.find((device) => tokenMatches(device.token, token)) ?? null
   }
 
   // ── 代理 ────────────────────────────────────────────────────────────────
@@ -511,6 +550,12 @@ export function apply(ctx, config) {
     if (device === null) return null
     device.lastSeenAt = Date.now()
     return device
+  }
+
+  /** 上游会话失效（DSH 重启、换 launch token）时缓存必须作废，否则手机端会一直 401。 */
+  function invalidateUpstreamCookie() {
+    upstreamCookie = null
+    upstreamCookieAt = 0
   }
 
   function proxyRequest(req, res, device) {
@@ -531,6 +576,8 @@ export function apply(ctx, config) {
         headers,
         agent: false,
       }, (response) => {
+        // 上游 401 = 我们缓存的 cookie 过期：作废，下一个请求重新换。
+        if (response.statusCode === 401) invalidateUpstreamCookie()
         const outHeaders = { ...response.headers }
         delete outHeaders['set-cookie']
         res.writeHead(response.statusCode ?? 502, outHeaders)
@@ -553,7 +600,9 @@ export function apply(ctx, config) {
     return upstreamCookieHeader().then((cookie) => {
       const target = new URL(upstreamOrigin())
       const headers = { ...req.headers, host: target.host, origin: target.origin }
+      // 设备 cookie 只属于本插件，不透给上游；上游只认 launch token 换来的 cookie。
       if (cookie !== null) headers.cookie = cookie
+      else delete headers.cookie
       delete headers['accept-encoding']
       const upstream = http.request({
         hostname: target.hostname.replace(/^\[|\]$/g, ''),
@@ -563,6 +612,7 @@ export function apply(ctx, config) {
         headers,
         agent: false,
       }, (response) => {
+        if (response.statusCode === 401) invalidateUpstreamCookie()
         const chunks = []
         response.on('data', (chunk) => chunks.push(chunk))
         response.on('end', () => {
@@ -601,32 +651,49 @@ export function apply(ctx, config) {
   }
 
   function handleSocketUpgrade(req, socket, head) {
-    const token = parseCookies(req.headers.cookie)[DEVICE_COOKIE]
-    const device = findDevice(token)
-    if (device === null) {
-      socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n')
-      socket.destroy()
-      return
-    }
-    device.lastSeenAt = Date.now()
-    const target = new URL(upstreamOrigin())
-    const upstream = net.connect(Number(target.port), target.hostname.replace(/^\[|\]$/g, ''), () => {
-      const headers = { ...req.headers }
-      headers.host = target.host
-      headers.origin = target.origin
-      headers.cookie = upstreamCookie ?? ''
-      const lines = [`${req.method} ${req.url} HTTP/1.1`]
-      for (const [key, value] of Object.entries(headers)) {
-        if (Array.isArray(value)) for (const item of value) lines.push(`${key}: ${item}`)
-        else if (value !== undefined) lines.push(`${key}: ${value}`)
+    try {
+      const token = parseCookies(req.headers.cookie)[DEVICE_COOKIE]
+      const device = findDevice(token)
+      if (device === null) {
+        socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n')
+        socket.destroy()
+        return
       }
-      upstream.write(lines.join('\r\n') + '\r\n\r\n')
-      if (head?.length) upstream.write(head)
-      upstream.pipe(socket)
-      socket.pipe(upstream)
-    })
-    upstream.on('error', () => socket.destroy())
-    socket.on('error', () => upstream.destroy())
+      device.lastSeenAt = Date.now()
+      const target = new URL(upstreamOrigin())
+      // 冷启动第一个请求就是 WS 时缓存还是空的：先取一次上游 cookie，
+      // 不要拿空 cookie 去连（上游会 401，手机首屏白屏）。
+      const proceed = (cookie) => {
+        const upstream = net.connect(Number(target.port), target.hostname.replace(/^\[|\]$/g, ''), () => {
+          const headers = { ...req.headers }
+          headers.host = target.host
+          headers.origin = target.origin
+          // 设备 cookie 只属于本插件：不透给上游。
+          if (typeof cookie === 'string' && cookie !== '') headers.cookie = cookie
+          else delete headers.cookie
+          const lines = [`${req.method} ${req.url} HTTP/1.1`]
+          for (const [key, value] of Object.entries(headers)) {
+            if (Array.isArray(value)) for (const item of value) lines.push(`${key}: ${item}`)
+            else if (value !== undefined) lines.push(`${key}: ${value}`)
+          }
+          upstream.write(lines.join('\r\n') + '\r\n\r\n')
+          if (head?.length) upstream.write(head)
+          upstream.pipe(socket)
+          socket.pipe(upstream)
+        })
+        upstream.on('error', () => socket.destroy())
+        socket.on('error', () => upstream.destroy())
+      }
+      if (upstreamCookie !== null) {
+        proceed(upstreamCookie)
+        return
+      }
+      upstreamCookieHeader()
+        .then((cookie) => proceed(cookie))
+        .catch(() => socket.destroy())
+    } catch {
+      try { socket.destroy() } catch {}
+    }
   }
 
   // ── 公网入口：配对页 ─────────────────────────────────────────────────────
@@ -639,19 +706,31 @@ export function apply(ctx, config) {
 
   function pairFailureKey(req) {
     const forwarded = req.headers['x-forwarded-for']
-    return typeof forwarded === 'string' ? forwarded.split(',')[0].trim() : String(req.socket.remoteAddress ?? 'unknown')
+    if (typeof forwarded === 'string') {
+      // 首个 XFF 由客户端自带、可随便伪造；cloudflared 会在末尾追加真实来源。
+      const parts = forwarded.split(',').map((part) => part.trim()).filter(Boolean)
+      if (parts.length > 0) return parts[parts.length - 1]
+    }
+    return String(req.socket.remoteAddress ?? 'unknown')
   }
 
   function pairingLocked(req) {
+    const global = pairFailures.get('*')
+    if (global !== undefined && global.count >= PAIR_MAX_ATTEMPTS * 4 && global.resetAt > Date.now()) return true
     const record = pairFailures.get(pairFailureKey(req))
     return record !== undefined && record.count >= PAIR_MAX_ATTEMPTS && record.resetAt > Date.now()
   }
 
-  function notePairFailure(req) {
-    const key = pairFailureKey(req)
+  function bumpPairFailure(key) {
     const record = pairFailures.get(key)
     if (record === undefined || record.resetAt <= Date.now()) pairFailures.set(key, { count: 1, resetAt: Date.now() + PAIR_LOCK_MS })
     else record.count += 1
+  }
+
+  function notePairFailure(req) {
+    bumpPairFailure(pairFailureKey(req))
+    // 全局计数兜底：换 IP 绕过单 IP 限制时，仍然只能试这么多轮。
+    bumpPairFailure('*')
   }
 
   function tryPair(req, res, code, deviceName) {
@@ -668,19 +747,32 @@ export function apply(ctx, config) {
     }
     record.used = true
     pairCodes.delete(code)
+    // 明文 token 只进 cookie，落盘的永远是哈希。
+    const deviceToken = crypto.randomBytes(32).toString('hex')
     const device = {
       id: crypto.randomBytes(8).toString('hex'),
       name: typeof deviceName === 'string' && deviceName.trim() !== '' ? deviceName.trim().slice(0, 40) : defaultDeviceName(req.headers['user-agent'], code),
-      token: crypto.randomBytes(32).toString('hex'),
+      token: hashToken(deviceToken),
       createdAt: Date.now(),
       lastSeenAt: Date.now(),
     }
     state.devices.push(device)
     writeState(state)
     res.statusCode = 302
-    res.setHeader('set-cookie', deviceCookie(device.token, req))
+    res.setHeader('set-cookie', deviceCookie(deviceToken, req))
     res.setHeader('location', '/')
     res.end()
+  }
+
+  /** 配对页把 code / UA 直接拼进属性：必须转义，否则公网未授权就能反射 XSS。 */
+  function escapeAttr(value) {
+    return String(value ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch])
+  }
+
+  /** 配对码本来就只该是 6 位数字；其它形态一律当空值。 */
+  function safePairCode(code) {
+    const text = String(code ?? '').trim()
+    return /^[0-9]{0,6}$/.test(text) ? text : ''
   }
 
   function pairPage(req, res, code) {
@@ -717,9 +809,9 @@ p.err{min-height:18px;margin:10px 0 0;font-size:13px;line-height:18px;color:#dc2
 <h1>移动控制配对</h1>
 <p class="hint">配对码由电脑端「移动控制」生成，5 分钟内有效。配对成功后这台设备会长期保持登录。</p>
 <div class="field"><label for="code">6 位配对码</label>
-<input id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000" value="${code ?? ''}"></div>
+<input id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000" value="${escapeAttr(safePairCode(code))}"></div>
 <div class="field"><label for="name">设备名称</label>
-<input id="name" maxlength="40" value="${defaultDeviceName(req.headers['user-agent'], code)}"></div>
+<input id="name" maxlength="40" value="${escapeAttr(defaultDeviceName(req.headers['user-agent'], code))}"></div>
 <button id="go" type="submit">配对</button>
 <p class="err" id="err"></p>
 </form></main>
@@ -761,6 +853,11 @@ form.addEventListener('submit', async (event) => {
     res.statusCode = 200
     res.setHeader('content-type', 'text/html; charset=utf-8')
     res.setHeader('cache-control', 'no-store')
+    // 这页是公网可访问的：禁掉外链与框架，压掉点击劫持与注入后的横向利用面。
+    res.setHeader('content-security-policy', "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'")
+    res.setHeader('x-frame-options', 'DENY')
+    res.setHeader('referrer-policy', 'no-referrer')
+    res.setHeader('x-content-type-options', 'nosniff')
     res.end(html)
   }
 
@@ -768,6 +865,11 @@ form.addEventListener('submit', async (event) => {
 
   function adminAllowed(req) {
     if (!isLoopback(req.socket.remoteAddress)) return false
+    // Host 也必须是回环：DNS rebinding 页面不带 Origin，只靠 remoteAddress 会把 /state 读走。
+    // 隧道代理会把上游 Host 改写成 127.0.0.1，所以手机端不受影响。
+    const host = String(req.headers.host || '')
+    const hostname = (host.startsWith('[') ? host.slice(0, host.indexOf(']') + 1) : host.replace(/:\d+$/, '')).toLowerCase()
+    if (!['127.0.0.1', 'localhost', '[::1]', '::1'].includes(hostname)) return false
     const origin = req.headers.origin
     if (typeof origin !== 'string') return true
     try {
@@ -922,15 +1024,26 @@ form.addEventListener('submit', async (event) => {
           const url = new URL(req.url, 'http://localhost')
           // 健康检查对隧道/监控公开，不走设备认证。
           if (url.pathname === '/mobile-control/health') return sendJson(res, 200, { ok: true })
-          if (url.pathname === '/mobile-control/pair' && req.method === 'GET') return pairPage(req, res, url.searchParams.get('code'))
+          // 管理接口只给本机：隧道侧已配对设备等价于管理员，能铸新配对码、踢设备、改端口，
+          // 这里只放行只读的 /state，写操作一律要求走 59681。
+          if (url.pathname.startsWith('/mobile-control/api') || url.pathname.startsWith('/mobile-access/api')) {
+            const adminPath = url.pathname.replace(/^\/(?:mobile-control|mobile-access)\/api/, '') || '/'
+            const readOnly = (req.method === 'GET') && (adminPath === '/' || adminPath === '/state')
+            if (!readOnly) return sendJson(res, 403, { error: 'admin_local_only' })
+          }
+          // 配对码不放进 URL：query 会留在浏览器历史与边缘日志里，页面只接受手动输入。
+          if (url.pathname === '/mobile-control/pair' && req.method === 'GET') return pairPage(req, res, '')
           if (url.pathname === '/mobile-control/pair' && req.method === 'POST') {
-            return readBody(req).then((text) => {
-              let body = {}
-              try {
-                body = JSON.parse(text || '{}')
-              } catch {}
-              tryPair(req, res, String(body.code ?? ''), body.name)
-            })
+            return readBody(req)
+              .catch(() => null)
+              .then((text) => {
+                if (text === null) return sendJson(res, 413, { error: 'body_too_large' })
+                let body = {}
+                try {
+                  body = JSON.parse(text || '{}')
+                } catch {}
+                tryPair(req, res, String(body.code ?? ''), body.name)
+              })
           }
           authorizedDevice(req).then((device) => {
             if (device === null) {

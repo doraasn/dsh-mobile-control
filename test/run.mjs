@@ -51,7 +51,7 @@ function admin(method, pathname, body) {
   })
 }
 
-function publicRequest(method, pathname, { cookie, body } = {}) {
+function publicRequest(method, pathname, { cookie, body, headers } = {}) {
   return new Promise((resolve, reject) => {
     const payload = body === undefined ? null : JSON.stringify(body)
     const req = http.request({
@@ -62,6 +62,7 @@ function publicRequest(method, pathname, { cookie, body } = {}) {
       headers: {
         ...(cookie ? { cookie } : {}),
         ...(payload ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) } : {}),
+        ...(headers ?? {}),
       },
     }, (res) => {
       const chunks = []
@@ -150,5 +151,66 @@ const foreign = await new Promise((resolve, reject) => {
 })
 assert.equal(foreign.status, 403)
 
-console.log('宿主自测通过：10 项')
+// 11. 配对页反射 XSS：code 与 UA 都不能原样进入 HTML
+const xssCode = await publicRequest('GET', '/mobile-control/pair?code=%22%3E%3Csvg%20onload%3Dalert(1)%3E')
+assert.equal(xssCode.status, 200)
+assert.ok(!xssCode.body.includes('<svg'), 'code 参数不应反射出标签')
+// 配对码不再从 query 预填：链接里的数字也不该出现在页面里
+const prefilled = await publicRequest('GET', '/mobile-control/pair?code=123456')
+assert.ok(!prefilled.body.includes('123456'), '配对码不应从 query 预填')
+const xssUa = await publicRequest('GET', '/mobile-control/pair', {
+  headers: { 'user-agent': 'Android 10; "><svg/onload=alert(1)>' },
+})
+assert.ok(!xssUa.body.includes('<svg'), 'UA 不应反射出标签')
+assert.match(String(xssCode.headers['content-security-policy'] ?? ''), /default-src 'none'/)
+
+// 12. 隧道侧不得调用管理写接口（设备=管理员的提权面），只读 /state 放行
+const tunnelWrite = await publicRequest('POST', '/mobile-control/api/pair/start', { body: {} })
+assert.equal(tunnelWrite.status, 403)
+// 只读 /state 仍要走设备认证（这里设备已在第 7 步撤销），所以是 401 而不是 403/200
+const tunnelRead = await publicRequest('GET', '/mobile-control/api/state')
+assert.equal(tunnelRead.status, 401)
+
+// 12. 设备 token 只以哈希落盘，且旧明文记录会在加载时迁移
+const stateFile = path.join(home, 'storages', 'mobile-control.json')
+// 第 7 步把设备撤销了，这里重新配一台来检查落盘形态
+const pair2 = await admin('POST', '/mobile-control/api/pair/start', {})
+const ok2 = await publicRequest('POST', '/mobile-control/pair', { body: { code: pair2.body.code, name: '哈希机' } })
+assert.equal(ok2.status, 302)
+const persisted = fs.readFileSync(stateFile, 'utf8')
+const rawToken = /dsh_ma_device=([0-9a-f]{64})/.exec(String(ok2.headers['set-cookie'] ?? ''))[1]
+assert.ok(!persisted.includes(rawToken), '状态文件不应包含设备 token 明文')
+assert.match(persisted, /"token": "sha256:[0-9a-f]{64}"/)
+
+// 迁移：写入一条明文旧记录 + 调 readState()，应被改成哈希
+const { readState } = await import('../lib/index.js')
+const legacy = JSON.parse(persisted)
+legacy.devices.push({ id: 'legacy1', name: '旧设备', token: 'a'.repeat(64), createdAt: 1, lastSeenAt: 1 })
+fs.writeFileSync(stateFile, JSON.stringify(legacy))
+const migratedState = readState()
+const legacyDevice = migratedState.devices.find((device) => device.id === 'legacy1')
+assert.match(legacyDevice.token, /^sha256:[0-9a-f]{64}$/, '旧明文 token 应被迁移为哈希')
+assert.match(fs.readFileSync(stateFile, 'utf8'), /sha256:[0-9a-f]{64}/, '迁移结果应落盘')
+
+// 13. 管理接口的 Host 必须是回环（挡 DNS rebinding 的无 Origin GET）
+const rebindAdmin = await new Promise((resolve, reject) => {
+  const req = new http.IncomingMessage()
+  req.method = 'GET'
+  req.url = '/mobile-control/api/state'
+  req.socket = { remoteAddress: '127.0.0.1', encrypted: false }
+  req.headers = { host: 'evil.example' }
+  req.push(null)
+  const res = {
+    statusCode: 200,
+    headers: {},
+    setHeader(name, value) { this.headers[name] = value },
+    writeHead(status) { this.statusCode = status },
+    end(chunk) { resolve({ status: this.statusCode, body: String(chunk ?? '') }) },
+    on() {},
+  }
+  handler(req, res).catch(reject)
+})
+assert.equal(rebindAdmin.status, 403, '伪造 Host 的管理请求应被拒')
+
+console.log('宿主自测通过：17 项')
 if (typeof dispose === 'function') dispose()
