@@ -185,7 +185,7 @@ assert.match(persisted, /"token": "sha256:[0-9a-f]{64}"/)
 // 迁移：写入一条明文旧记录 + 调 readState()，应被改成哈希
 const { readState } = await import('../lib/index.js')
 const legacy = JSON.parse(persisted)
-legacy.devices.push({ id: 'legacy1', name: '旧设备', token: 'a'.repeat(64), createdAt: 1, lastSeenAt: 1 })
+legacy.devices.push({ id: 'legacy1', name: '旧设备', token: 'a'.repeat(64), createdAt: Date.now(), lastSeenAt: Date.now() })
 fs.writeFileSync(stateFile, JSON.stringify(legacy))
 const migratedState = readState()
 const legacyDevice = migratedState.devices.find((device) => device.id === 'legacy1')
@@ -212,5 +212,15 @@ const rebindAdmin = await new Promise((resolve, reject) => {
 })
 assert.equal(rebindAdmin.status, 403, '伪造 Host 的管理请求应被拒')
 
-console.log('宿主自测通过：17 项')
+// 14. 90 天不活跃的设备在加载时失效
+const withOld = JSON.parse(fs.readFileSync(stateFile, 'utf8'))
+withOld.devices.push({ id: 'stale', name: '旧手机', token: 'sha256:' + 'b'.repeat(64), createdAt: Date.now() - 100 * 86400000, lastSeenAt: Date.now() - 100 * 86400000 })
+withOld.devices.push({ id: 'fresh', name: '新手机', token: 'sha256:' + 'c'.repeat(64), createdAt: Date.now(), lastSeenAt: Date.now() })
+fs.writeFileSync(stateFile, JSON.stringify(withOld))
+const pruned = readState()
+assert.ok(!pruned.devices.some((device) => device.id === 'stale'), '90 天不活跃设备应被清掉')
+assert.ok(pruned.devices.some((device) => device.id === 'fresh'), '活跃设备应保留')
+assert.ok(!JSON.parse(fs.readFileSync(stateFile, 'utf8')).devices.some((device) => device.id === 'stale'), '清理结果应落盘')
+
+console.log('宿主自测通过：20 项')
 if (typeof dispose === 'function') dispose()

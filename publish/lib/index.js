@@ -13,7 +13,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'
 import net from 'node:net'
-import { execFile, spawn } from 'node:child_process'
+import { execFile, execFileSync, spawn } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -25,6 +25,8 @@ const STORAGE = path.join(DSH_HOME, 'storages', 'mobile-control.json')
 const LEGACY_STORAGE = path.join(DSH_HOME, 'storages', 'mobile-access.json')
 const DEVICE_COOKIE = 'dsh_ma_device'
 const TOKEN_PREFIX = 'sha256:'
+/** 长期不活跃的设备自动失效（90 天）：失窃 cookie 不再永久有效。 */
+const DEVICE_MAX_IDLE_MS = 90 * 24 * 60 * 60 * 1000
 
 /** 设备 token 只存哈希：文件被读走也不能直接拿去冒充设备。 */
 function hashToken(token) {
@@ -79,8 +81,18 @@ export function readState() {
     const devices = Array.isArray(parsed.devices) ? parsed.devices : []
     // 旧版本把设备 token 明文存在这里：加载时一次性改存哈希，落盘文件里不再有可直接使用的凭据。
     let migrated = false
+    const now = Date.now()
     const safeDevices = devices
       .filter((device) => device && typeof device === 'object')
+      .filter((device) => {
+        // 长期不活跃的设备自动失效：失窃的 cookie 不会永久有效。
+        const lastSeen = Number(device.lastSeenAt) || Number(device.createdAt) || 0
+        if (lastSeen > 0 && now - lastSeen > DEVICE_MAX_IDLE_MS) {
+          migrated = true
+          return false
+        }
+        return true
+      })
       .map((device) => {
         if (typeof device.token === 'string' && device.token !== '' && !device.token.startsWith(TOKEN_PREFIX)) {
           migrated = true
@@ -114,6 +126,24 @@ function writeState(state) {
   const tmp = `${STORAGE}.${process.pid}.tmp`
   fs.writeFileSync(tmp, JSON.stringify(state, null, 2) + '\n', 'utf8')
   fs.renameSync(tmp, STORAGE)
+  tightenAcl()
+}
+
+/**
+ * 状态文件里有设备 token 哈希与会话配置：Windows 上把继承的 ACL 收掉，只留当前用户。
+ * 失败不致命（例如 FAT32 或没有 icacls），下次写盘再试。
+ */
+let aclTightened = false
+function tightenAcl() {
+  if (process.platform !== 'win32' || aclTightened) return
+  const user = process.env.USERNAME
+  if (!user) return
+  try {
+    execFileSync('icacls', [STORAGE, '/inheritance:r', '/grant:r', `${user}:F`], { windowsHide: true, stdio: 'ignore', timeout: 10000 })
+    aclTightened = true
+  } catch {
+    /* 收权失败不影响功能 */
+  }
 }
 
 // ── 工具 ──────────────────────────────────────────────────────────────────
