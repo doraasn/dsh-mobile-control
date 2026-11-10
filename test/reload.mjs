@@ -42,7 +42,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 // 第一次装载
 apply(ctx, { port: 3456 })
 await sleep(400)
-assert.equal(routes.length, 1, '第一次装载应注册一条路由')
+assert.equal(routes.length, 2, '第一次装载应注册新路由与兼容别名')
 
 const state1 = await getState()
 assert.equal(state1.listening, 3456)
@@ -50,7 +50,7 @@ assert.equal(state1.listening, 3456)
 // 不 dispose，直接模拟热重载再装载一次
 apply(ctx, { port: 3456 })
 await sleep(1200)
-assert.equal(routes.length, 1, '热重载后仍应只有一条路由（不能重复）')
+assert.equal(routes.length, 2, '热重载后仍应只有两条路由（不能重复）')
 
 const state2 = await getState()
 assert.equal(state2.listening, 3456, '新实例应接管同一端口')

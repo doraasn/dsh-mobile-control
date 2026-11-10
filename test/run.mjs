@@ -23,8 +23,8 @@ const ctx = {
 }
 
 apply(ctx, { port: 3455 })
-assert.equal(routes.length, 1, '应注册一条管理路由')
-assert.equal(routes[0].path, '/mobile-control/api')
+assert.equal(routes.length, 2, '应注册新路径与改名兼容别名')
+assert.deepEqual(routes.map((route) => route.path).sort(), ['/mobile-access/api', '/mobile-control/api'])
 
 const handler = routes[0].handler
 
@@ -84,6 +84,11 @@ assert.equal(initial.body.enabled, true)
 assert.equal(initial.body.port, 3455)
 assert.deepEqual(initial.body.devices, [])
 assert.equal(initial.body.listening, 3455)
+
+// 1b. 改名前的旧路径也能拿到同一份数据（浏览器缓存兼容）
+const legacyState = await admin('GET', '/mobile-access/api/state')
+assert.equal(legacyState.status, 200)
+assert.equal(legacyState.body.enabled, true)
 
 // 2. 未配对访问首页 → 401
 const anonymous = await publicRequest('GET', '/')
