@@ -28,14 +28,14 @@ assert.deepEqual(routes.map((route) => route.path).sort(), ['/mobile-access/api'
 
 const handler = routes[0].handler
 
-function admin(method, pathname, body) {
+function admin(method, pathname, body, headers = { host: '127.0.0.1:3455' }) {
   return new Promise((resolve, reject) => {
     const payload = body === undefined ? '' : JSON.stringify(body)
     const req = new http.IncomingMessage()
     req.method = method
     req.url = pathname
     req.socket = { remoteAddress: '127.0.0.1', encrypted: false }
-    req.headers = { host: '127.0.0.1', ...(payload === '' ? {} : { 'content-type': 'application/json' }) }
+    req.headers = { ...headers, ...(payload === '' ? {} : { 'content-type': 'application/json' }) }
     req.push(payload)
     req.push(null)
     const chunks = []
@@ -222,5 +222,22 @@ assert.ok(!pruned.devices.some((device) => device.id === 'stale'), '90 天不活
 assert.ok(pruned.devices.some((device) => device.id === 'fresh'), '活跃设备应保留')
 assert.ok(!JSON.parse(fs.readFileSync(stateFile, 'utf8')).devices.some((device) => device.id === 'stale'), '清理结果应落盘')
 
-console.log('宿主自测通过：20 项')
+// 15. 管理接口头部边缘矩阵（回环名单 / 端口 / 畸形 Origin）
+const edge = []
+const expectAdmin = async (label, headers, wanted) => {
+  const res = await admin('GET', '/mobile-control/api/state', undefined, headers)
+  edge.push({ label, ok: res.status === wanted, got: res.status, wanted })
+}
+await expectAdmin('回环带端口', { host: '127.0.0.1:3455' }, 200)
+await expectAdmin('大写 localhost', { host: 'LOCALHOST:3455' }, 200)
+await expectAdmin('IPv6 回环', { host: '[::1]:3455' }, 200)
+await expectAdmin('后缀伪装域', { host: '127.0.0.1.evil.com' }, 403)
+await expectAdmin('同端口 Origin', { host: '127.0.0.1:3455', origin: 'http://127.0.0.1:3455' }, 200)
+await expectAdmin('localhost 同端口', { host: '127.0.0.1:3455', origin: 'http://localhost:3455' }, 200)
+await expectAdmin('异端口 Origin', { host: '127.0.0.1:3455', origin: 'http://127.0.0.1:9999' }, 403)
+await expectAdmin('外部 Origin', { host: '127.0.0.1:3455', origin: 'https://evil.example' }, 403)
+await expectAdmin('畸形 Origin', { host: '127.0.0.1:3455', origin: 'not-a-url' }, 403)
+for (const item of edge) assert.equal(item.got, item.wanted, `${item.label} 期望 ${item.wanted} 实际 ${item.got}`)
+
+console.log('宿主自测通过：29 项')
 if (typeof dispose === 'function') dispose()
