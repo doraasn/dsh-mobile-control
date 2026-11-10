@@ -239,5 +239,11 @@ await expectAdmin('外部 Origin', { host: '127.0.0.1:3455', origin: 'https://ev
 await expectAdmin('畸形 Origin', { host: '127.0.0.1:3455', origin: 'not-a-url' }, 403)
 for (const item of edge) assert.equal(item.got, item.wanted, `${item.label} 期望 ${item.wanted} 实际 ${item.got}`)
 
-console.log('宿主自测通过：29 项')
+// 16. 拒绝原因可区分（forbidden-host / forbidden-origin），便于日志与门禁识别
+const denyHost = await admin('GET', '/mobile-control/api/state', undefined, { host: 'evil.example' })
+assert.equal(denyHost.body.error, 'forbidden-host', `实际 ${JSON.stringify(denyHost.body)}`)
+const denyOrigin = await admin('GET', '/mobile-control/api/state', undefined, { host: '127.0.0.1:3455', origin: 'https://evil.example' })
+assert.equal(denyOrigin.body.error, 'forbidden-origin', `实际 ${JSON.stringify(denyOrigin.body)}`)
+
+console.log('宿主自测通过：31 项')
 if (typeof dispose === 'function') dispose()
