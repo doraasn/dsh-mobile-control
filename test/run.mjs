@@ -106,7 +106,7 @@ assert.equal(wrong.status, 401)
 
 // 5. 正确配对 → 302 + Set-Cookie
 const ok = await publicRequest('POST', '/mobile-control/pair', { body: { code: pair.body.code, name: '测试机' } })
-assert.equal(ok.status, 302)
+assert.equal(ok.status, 303)
 const setCookie = String(ok.headers['set-cookie'] ?? '')
 assert.match(setCookie, /dsh_ma_device=[0-9a-f]{64}/)
 assert.match(setCookie, /Max-Age=34560000/)
@@ -176,7 +176,7 @@ const stateFile = path.join(home, 'storages', 'mobile-control.json')
 // 第 7 步把设备撤销了，这里重新配一台来检查落盘形态
 const pair2 = await admin('POST', '/mobile-control/api/pair/start', {})
 const ok2 = await publicRequest('POST', '/mobile-control/pair', { body: { code: pair2.body.code, name: '哈希机' } })
-assert.equal(ok2.status, 302)
+assert.equal(ok2.status, 303)
 const persisted = fs.readFileSync(stateFile, 'utf8')
 const rawToken = /dsh_ma_device=([0-9a-f]{64})/.exec(String(ok2.headers['set-cookie'] ?? ''))[1]
 assert.ok(!persisted.includes(rawToken), '状态文件不应包含设备 token 明文')

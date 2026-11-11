@@ -200,6 +200,8 @@ sudo systemctl enable --now cloudflared
 - Cookie 为 `HttpOnly; SameSite=Lax`，HTTPS 下自动加 `Secure`。
 - 配对失败 5 次锁 10 分钟，防止暴力猜码。
 - 建议长期开启 Cloudflare 的 **Access** 或至少给域名加 WAF 规则；本插件的配对是第二道门，不是唯一一道。
+- **隧道一旦通，DNS 泄露类工具（如 `crt.sh` / Certificate Transparency 日志）可能扫到你的子域名。** 未加 Access 时，扫到即可看到登录页并尝试配对；配对锁只防猜码，不防「你已经把页面暴露在公网」这件事。长期不用时建议停掉 `cloudflared` 进程，而不是只关插件开关。
+- **Host/Origin 校验只对本机回环请求生效**：来自隧道的请求 Host 是公网域名，插件按约定放行（否则手机端根本进不来）；真正的访问控制依赖配对 token + Cloudflare Access。
 
 ---
 

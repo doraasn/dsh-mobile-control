@@ -386,6 +386,18 @@ function defaultDeviceName(ua, code) {
   return code ? `设备 ${code}` : '手机'
 }
 
+/**
+ * 滑动续期：cookie 值必须是客户端持有的明文 token。
+ * 设备表自 0.1.2 起只存哈希，直接回写 device.token 会把哈希当凭据发给浏览器，
+ * 之后每次认证都会再哈希一次，表现就是「配对成功但立刻变成未配对」。
+ */
+function renewDeviceCookie(req, res, device) {
+  if (device === null) return
+  const candidate = parseCookies(req.headers.cookie)[DEVICE_COOKIE]
+  if (typeof candidate !== 'string' || candidate === '' || candidate.startsWith(TOKEN_PREFIX)) return
+  res.setHeader('set-cookie', deviceCookie(candidate, req))
+}
+
 /** 移动端 UA 判定：只在手机上改写 boot manifest，桌面不受影响。 */
 function isMobileUa(ua) {
   return typeof ua === 'string' && /Android|iPhone|iPad|iPod|Mobile|HarmonyOS/i.test(ua)
@@ -624,7 +636,7 @@ export function apply(ctx, config) {
       req.pipe(upstream)
       res.on('close', () => upstream.destroy())
       // 滑动续期
-      if (device !== null) res.setHeader('set-cookie', deviceCookie(device.token, req))
+      renewDeviceCookie(req, res, device)
     })
   }
 
@@ -671,7 +683,7 @@ export function apply(ctx, config) {
         if (!res.headersSent) sendJson(res, 502, { error: 'upstream_unavailable' })
       })
       upstream.end()
-      if (device !== null) res.setHeader('set-cookie', deviceCookie(device.token, req))
+      renewDeviceCookie(req, res, device)
     })
   }
 
@@ -791,7 +803,7 @@ export function apply(ctx, config) {
     }
     state.devices.push(device)
     writeState(state)
-    res.statusCode = 302
+    res.statusCode = 303
     res.setHeader('set-cookie', deviceCookie(deviceToken, req))
     res.setHeader('location', '/')
     res.end()
