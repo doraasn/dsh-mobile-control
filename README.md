@@ -216,6 +216,20 @@ sudo systemctl enable --now cloudflared
 
 状态文件：`~/.dsh/storages/mobile-control.json`（设备 token、端口、公网地址、模块排除项）。
 
+## 迁移注意
+
+### 0.1.2 → 0.1.5：设备 token 改为哈希存储
+
+0.1.2 起设备 token 只以 `sha256:<hex>` 形式落盘，明文不再写入状态文件。这次改造踩过一个坑，改 token 存储时要一起检查：
+
+- **坑**：滑动续期原本直接执行 `deviceCookie(device.token, req)`。token 变成哈希后，这一句会把哈希值当凭据写回浏览器 cookie，配对成功后第一次页面请求就把正确 cookie 覆盖掉，之后每次认证都在哈希上再哈希，表现为「配对成功→立刻未配对→反复重配都失败」。
+- **修复**（0.1.5）：续期只用客户端带来的明文 token（`renewDeviceCookie`），遇到 `sha256:` 开头不续期；配对重定向由 `302` 改为 `303`，避免浏览器把 POST 带到首页触发 405。
+- **存量影响**：0.1.2–0.1.4 期间完成配对的设备，cookie 已被污染为哈希值，**升级不能自动恢复**，需要在「已配对设备」里撤销该设备后重新配对。
+
+### 0.1.4：旧配置目录
+
+`inferLegacyPublicUrl` 一度只读 `~/.dsh/mobile-control/remote`，而旧版 `dsh-mobile` 的配置在 `~/.dsh/mobile-access/remote`。0.1.4 起两处都读。
+
 ## 与 dsh-mobile 的关系
 
 本插件是它的精简替代：保留代理、配对、模块裁剪，去掉隧道管理、自建 CA、移动端 UI 重构、扩展系统。两者不要同时启用（都占端口、都改写上游认证）。
