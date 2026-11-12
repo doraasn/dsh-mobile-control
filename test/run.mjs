@@ -155,9 +155,10 @@ assert.equal(foreign.status, 403)
 const xssCode = await publicRequest('GET', '/mobile-control/pair?code=%22%3E%3Csvg%20onload%3Dalert(1)%3E')
 assert.equal(xssCode.status, 200)
 assert.ok(!xssCode.body.includes('<svg'), 'code 参数不应反射出标签')
-// 配对码不再从 query 预填：链接里的数字也不该出现在页面里
+// 配对码不从 query 预填（避免留在访问日志），而由页面从 fragment 读取
 const prefilled = await publicRequest('GET', '/mobile-control/pair?code=123456')
 assert.ok(!prefilled.body.includes('123456'), '配对码不应从 query 预填')
+assert.ok(prefilled.body.includes('location.hash'), '页面需内置 fragment 读取逻辑以支持复制链接自动填充')
 const xssUa = await publicRequest('GET', '/mobile-control/pair', {
   headers: { 'user-agent': 'Android 10; "><svg/onload=alert(1)>' },
 })
