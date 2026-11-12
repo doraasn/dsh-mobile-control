@@ -11,7 +11,7 @@ import path from 'node:path'
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-mobile-control-'))
 process.env.DSH_HOME = home
 
-const { apply } = await import('../lib/index.js')
+const { apply, rewriteBootManifest } = await import('../lib/index.js')
 
 const routes = []
 let dispose = null
@@ -244,6 +244,25 @@ const denyHost = await admin('GET', '/mobile-control/api/state', undefined, { ho
 assert.equal(denyHost.body.error, 'forbidden-host', `实际 ${JSON.stringify(denyHost.body)}`)
 const denyOrigin = await admin('GET', '/mobile-control/api/state', undefined, { host: '127.0.0.1:3455', origin: 'https://evil.example' })
 assert.equal(denyOrigin.body.error, 'forbidden-origin', `实际 ${JSON.stringify(denyOrigin.body)}`)
+
+// 15. 合并请求地址必须同步剔除，否则清单删了但 bundle 仍整包下载
+{
+  const html = '<script>window.__DSH_BOOT__ = ' + JSON.stringify({
+    rev: 'r1',
+    entries: [
+      { id: 'keep-a', url: 'plugins/keep-a/client.js', rev: '1', inject: [] },
+      { id: 'drop-me', url: 'plugins/drop-me/client.js', rev: '1', inject: [] },
+    ],
+    batches: [
+      { phase: 'bootstrap', url: 'plugins/??boot/client.js&rev=1', rev: '1', entries: ['boot'] },
+      { phase: 'application', url: 'plugins/??keep-a/client.js,drop-me/client.js&rev=2', rev: '2', entries: ['keep-a', 'drop-me'] },
+    ],
+  }) + '</script>';
+  const rewritten = rewriteBootManifest(html, ['drop-me']);
+  assert.ok(rewritten.removed >= 1, '应移除 drop-me')
+  assert.ok(!rewritten.html.includes('drop-me/client.js'), '合并请求地址里不应再有 drop-me')
+  assert.ok(rewritten.html.includes('keep-a/client.js'), 'keep-a 必须保留')
+}
 
 console.log('宿主自测通过：31 项')
 if (typeof dispose === 'function') dispose()

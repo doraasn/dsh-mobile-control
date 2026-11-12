@@ -407,7 +407,19 @@ function isMobileUa(ua) {
  *   - 被排除的模块若仍被保留模块依赖，拒绝裁剪并返回原因；
  *   - 同时过滤 entries 与 batches[].entries。
  */
-function rewriteBootManifest(html, excludedIds) {
+/**
+ * 从合并请求地址里剔除被排除的模块。
+ * 形如 plugins/??a/client.js,b/client.js&rev=xxx；全部被剔除时返回 null。
+ */
+function filterBundleUrl(url, excludedIds) {
+  const match = /^(.*?\?\?)([^&]+)(&rev=[^&]*)?$/u.exec(url)
+  if (match === null) return url
+  const kept = match[2].split(',').filter((item) => !excludedIds.some((id) => item.includes(id)))
+  if (kept.length === 0) return null
+  return match[1] + kept.join(',') + (match[3] ?? '')
+}
+
+export function rewriteBootManifest(html, excludedIds) {
   if (!Array.isArray(excludedIds) || excludedIds.length === 0) return { html, removed: 0 }
   const marker = /(?:window\.__DSH_BOOT__|globalThis\["__DSH_BOOT__"\])\s*=\s*/u.exec(html)
   if (marker === null || marker.index === undefined) return { html, removed: 0, error: 'no_boot_manifest' }
@@ -451,6 +463,13 @@ function rewriteBootManifest(html, excludedIds) {
   for (const batch of batches) {
     if (!Array.isArray(batch.entries)) continue
     batch.entries = batch.entries.filter((id) => !excluded.has(id))
+    // 关键：batch.url 是「合并请求」地址（plugins/??a/client.js,b/client.js），
+    // 只删 entries 不改 URL，浏览器仍会把整包（含被排除模块）下载并执行。
+    if (typeof batch.url === 'string') {
+      const filtered = filterBundleUrl(batch.url, [...excluded])
+      if (filtered === null) batch.entries = []
+      else batch.url = filtered
+    }
   }
   parsed.batches = batches.filter((batch) => Array.isArray(batch.entries) ? batch.entries.length > 0 : true)
   let rebuilt = `${html.slice(0, marker.index)}${marker[0]}${JSON.stringify(parsed)}${html.slice(scriptEnd)}`
