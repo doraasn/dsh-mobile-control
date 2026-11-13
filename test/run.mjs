@@ -60,6 +60,9 @@ function publicRequest(method, pathname, { cookie, body, headers } = {}) {
       path: pathname,
       method,
       headers: {
+        // 真实隧道请求的 Host 是公网域名（cloudflared 保留原始 Host），
+        // 管理接口据此判定来源，测试必须还原这一点。
+        host: 'dsh.example.com',
         ...(cookie ? { cookie } : {}),
         ...(payload ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) } : {}),
         ...(headers ?? {}),
