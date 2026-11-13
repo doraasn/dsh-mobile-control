@@ -1,6 +1,6 @@
 {
   "name": "dsh-mobile-control",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "DSH 移动控制：轻量反向代理 + 设备配对 + 移动页模块裁剪，隧道交给外部 cloudflared/cpolar",
   "type": "module",
   "main": "lib/index.js",

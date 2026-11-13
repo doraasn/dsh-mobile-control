@@ -11,7 +11,7 @@ import path from 'node:path'
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-mobile-control-'))
 process.env.DSH_HOME = home
 
-const { apply, rewriteBootManifest } = await import('../lib/index.js')
+const { apply, rewriteBootManifest, rewriteSseLine } = await import('../lib/index.js')
 
 const routes = []
 let dispose = null
@@ -263,6 +263,30 @@ assert.equal(denyOrigin.body.error, 'forbidden-origin', `实际 ${JSON.stringify
   assert.ok(rewritten.removed >= 1, '应移除 drop-me')
   assert.ok(!rewritten.html.includes('drop-me/client.js'), '合并请求地址里不应再有 drop-me')
   assert.ok(rewritten.html.includes('keep-a/client.js'), 'keep-a 必须保留')
+}
+
+// 16. SSE 推送的 graph 也必须裁剪，否则连上 Host 后清单被覆盖
+{
+  const line = 'data: ' + JSON.stringify({
+    type: 'graph',
+    graph: {
+      rev: 'r1',
+      release: { version: '0.2.2-rc.1', commit: null },
+      entries: [
+        { id: 'keep', url: 'plugins/??keep/client.js&rev=1', rev: '1', inject: [] },
+        { id: 'drop', url: 'plugins/??drop/client.js&rev=1', rev: '1', inject: [] },
+      ],
+      batches: [
+        { phase: 'bootstrap', url: 'plugins/??boot/client.js&rev=1', rev: '1', entries: ['boot'] },
+        { phase: 'application', url: 'plugins/??keep/client.js,drop/client.js&rev=2', rev: '2', entries: ['keep', 'drop'] },
+      ],
+    },
+  }) + '\n'
+  const out = rewriteSseLine(line, ['drop'])
+  assert.ok(out.startsWith('data: '), '输出必须仍是 SSE data 行')
+  assert.ok(!out.includes('drop/client.js'), 'SSE graph 里不应再有 drop')
+  assert.ok(out.includes('keep/client.js'), 'keep 必须保留')
+  assert.ok(!out.includes('boot/client.js') === false, 'bootstrap 批次不受影响')
 }
 
 console.log('宿主自测通过：31 项')
