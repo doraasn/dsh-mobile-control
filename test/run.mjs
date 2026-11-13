@@ -176,6 +176,10 @@ const tunnelRead = await publicRequest('GET', '/mobile-control/api/state')
 assert.equal(tunnelRead.status, 401)
 
 // 12. 设备 token 只以哈希落盘，且旧明文记录会在加载时迁移
+// 12a. 本机 GUI 的管理写接口必须放行：0.1.2 的加固曾一刀切 403，把设置页的写操作全部关死
+const localWrite = await admin('POST', '/mobile-control/api/pair/start', {})
+assert.equal(localWrite.status, 200, '本机 GUI 写操作应放行，不能被 admin_local_only 拦住')
+assert.ok(String(localWrite.body?.code ?? '').length === 6, '本机应能铸配对码')
 const stateFile = path.join(home, 'storages', 'mobile-control.json')
 // 第 7 步把设备撤销了，这里重新配一台来检查落盘形态
 const pair2 = await admin('POST', '/mobile-control/api/pair/start', {})
