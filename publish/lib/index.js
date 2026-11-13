@@ -17,6 +17,7 @@ import { execFile, execFileSync, spawn } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
 import { Transform } from 'node:stream'
+import zlib from 'node:zlib'
 
 export const name = 'mobile-control'
 export const inject = ['webServer']
@@ -541,6 +542,44 @@ export function rewriteBootManifest(html, excludedIds) {
   return { html: rebuilt, removed: pruned.removed }
 }
 
+// ── 传输压缩 ──────────────────────────────────────────────────────────────
+// 免费隧道带宽只有 ~200 KB/s，而 DSH 的模块包原始就有 7 MB（上游只给 gzip，约 2.1 MB）。
+// 统一改用 brotli q6 重压缩，实测同一份包 2.12 MB → 1.36 MB（省 ~36%），压缩耗时约 150 ms。
+const BROTLI_CACHE = new Map()
+const BROTLI_CACHE_LIMIT = 64 * 1024 * 1024
+let brotliCacheBytes = 0
+
+function brotliCacheGet(key) {
+  const hit = BROTLI_CACHE.get(key)
+  if (hit === undefined) return null
+  BROTLI_CACHE.delete(key)
+  BROTLI_CACHE.set(key, hit)
+  return hit
+}
+
+function brotliCachePut(key, value) {
+  if (BROTLI_CACHE.has(key)) return
+  BROTLI_CACHE.set(key, value)
+  brotliCacheBytes += value.length
+  while (brotliCacheBytes > BROTLI_CACHE_LIMIT && BROTLI_CACHE.size > 1) {
+    const oldest = BROTLI_CACHE.keys().next().value
+    brotliCacheBytes -= BROTLI_CACHE.get(oldest).length
+    BROTLI_CACHE.delete(oldest)
+  }
+}
+
+function decompressBody(buffer, encoding) {
+  const enc = String(encoding ?? '').trim().toLowerCase()
+  if (enc === 'br') return zlib.brotliDecompressSync(buffer)
+  if (enc === 'gzip' || enc === 'x-gzip') return zlib.gunzipSync(buffer)
+  if (enc === 'deflate') return zlib.inflateSync(buffer)
+  return buffer
+}
+
+function compressBrotli(buffer) {
+  return zlib.brotliCompressSync(buffer, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 6 } })
+}
+
 // ── 插件主体 ──────────────────────────────────────────────────────────────
 
 const ROUTE_SLOT = Symbol.for('dsh-mobile-control.route')
@@ -703,6 +742,38 @@ export function apply(ctx, config) {
           && String(outHeaders['content-type'] ?? '').includes('text/event-stream')) {
           res.writeHead(response.statusCode ?? 502, outHeaders)
           response.pipe(createSseGraphFilter(state.excludedClientModules)).pipe(res)
+          return
+        }
+        // 模块包统一走 brotli：免费隧道带宽是瓶颈，gzip 2.1 MB vs brotli 1.36 MB。
+        const requestPath = String(req.url ?? '')
+        const wantsBrotli = /(?:^|,)\s*br\b/iu.test(String(req.headers['accept-encoding'] ?? ''))
+        if (wantsBrotli && requestPath.startsWith('/plugins/') && response.statusCode === 200) {
+          const cached = brotliCacheGet(requestPath)
+          if (cached !== null) {
+            response.resume()
+            delete outHeaders['content-length']
+            outHeaders['content-encoding'] = 'br'
+            outHeaders.vary = 'accept-encoding'
+            res.writeHead(200, outHeaders)
+            res.end(cached)
+            return
+          }
+          const chunks = []
+          response.on('data', (chunk) => chunks.push(chunk))
+          response.on('end', () => {
+            const raw = Buffer.concat(chunks)
+            let plain = raw
+            try {
+              plain = decompressBody(raw, outHeaders['content-encoding'])
+            } catch {}
+            const compressed = compressBrotli(plain)
+            brotliCachePut(requestPath, compressed)
+            delete outHeaders['content-length']
+            outHeaders['content-encoding'] = 'br'
+            outHeaders.vary = 'accept-encoding'
+            res.writeHead(200, outHeaders)
+            res.end(compressed)
+          })
           return
         }
         res.writeHead(response.statusCode ?? 502, outHeaders)
@@ -1171,7 +1242,16 @@ form.addEventListener('submit', async (event) => {
           if (url.pathname.startsWith('/mobile-control/api') || url.pathname.startsWith('/mobile-access/api')) {
             const adminPath = url.pathname.replace(/^\/(?:mobile-control|mobile-access)\/api/, '') || '/'
             const readOnly = (req.method === 'GET') && (adminPath === '/' || adminPath === '/state')
-            if (!readOnly) return sendJson(res, 403, { error: 'admin_local_only' })
+            // 管理接口的写操作只给本机 GUI：隧道请求即使已配对也不该改端口/踢设备。
+          // 用 adminDenial（remoteAddress + Host + Origin）判定，另加 Cloudflare 头兜底，
+          // 避免 cloudflared 改写 Host 后把公网请求误判成回环。
+          if (!readOnly) {
+            const tunneled = typeof req.headers['cf-connecting-ip'] === 'string'
+              || typeof req.headers['cf-ray'] === 'string'
+            if (tunneled || adminDenial(req) !== null) {
+              return sendJson(res, 403, { error: 'admin_local_only' })
+            }
+          }
           }
           // 配对码走 fragment（#code=xxxxxx）：fragment 不会发给服务端，不进边缘日志，
           // 页面用 JS 读取后回填；query 形态刻意不预填，避免旧链接把码留在访问日志里。
